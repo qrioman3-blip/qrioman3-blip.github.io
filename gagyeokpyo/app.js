@@ -173,16 +173,22 @@
       else if (s.type === 'QTY' && op.unit) out.push('수량');
       else if (s.type === 'PRICE') out.push('가격');
     }
+    if (op.origin && IMPORT_ONLY.test(op.origin)) out.push('원산지 나라 이름');
     return [...new Set(out)];
   }
   const itemClean = (x) => String(x).replace(/(은|는|을|를)$/u, '');
+  // 받침 있으면 a(은/을), 없으면 b(는/를)
+  const josa = (w, a, b) => { const c = String(w).trim().slice(-1).charCodeAt(0); return c >= 0xAC00 && c <= 0xD7A3 && (c - 0xAC00) % 28 ? a : b; };
+  const IMPORT_ONLY = /^(수입산|수입|외국산)$/;
 
   function heardHTML(t, spans) {
     if (!spans || !spans.length) return esc(t);
     let h = '', at = 0;
     for (const s of spans) {
-      h += esc(t.slice(at, s.start));
-      h += '<span class="sp sp-' + s.type + (s.conf != null && s.conf < LOW ? ' low' : '') + '" title="' + TYPE_NAME[s.type] + '">' + esc(t.slice(s.start, s.end)) + '</span>';
+      if (s.end <= at) continue;
+      const st = Math.max(s.start, at);
+      h += esc(t.slice(at, st));
+      h += '<span class="sp sp-' + s.type + (s.conf != null && s.conf < LOW ? ' low' : '') + '" title="' + TYPE_NAME[s.type] + '">' + esc(t.slice(st, s.end)) + '</span>';
       at = s.end;
     }
     return h + esc(t.slice(at));
@@ -196,7 +202,10 @@
     const ul = $('#heardOps');
     const low = (r.spans || []).filter((s) => s.conf != null && s.conf < LOW);
     if (!done.length) {
-      ul.innerHTML = '<li><span class="miss">가격을 못 알아들었어요. “사과 한 봉지 오천 원”처럼 원까지 말해 주세요.</span></li>';
+      const gotPrice = (r.spans || []).some((s) => s.type === 'PRICE');
+      ul.innerHTML = gotPrice
+        ? '<li><span class="miss">값은 들었는데 품목 이름을 못 알아들었어요. “사과 한 봉지 오천 원”처럼 품목부터 말해 주세요.</span></li>'
+        : '<li><span class="miss">가격을 못 알아들었어요. “사과 한 봉지 오천 원”처럼 원까지 말해 주세요.</span></li>';
       $('#undo').hidden = true;
     } else {
       $('#undo').hidden = false;
@@ -208,10 +217,11 @@
         const ex = (it.extra || []).map((x) => ', ' + esc(qtyText(x.qty, x.unit || it.unit, x.per)) + ' ' + P.won(x.price) + '원').join('');
         let li = '<li><span class="what">' + esc(it.item) + '</span> 가격표를 ' + (d.kind === 'upd' ? '고쳤어요' : '만들었어요') + '. ' + (q ? esc(q) + ' ' : '') + P.won(it.price) + '원' + ex +
           (it.origin ? ', 원산지 ' + esc(it.origin) + '.' : '. <span class="miss">원산지를 말하지 않아서 빈칸으로 뒀어요.</span>');
+        if (it.origin && IMPORT_ONLY.test(it.origin)) li += '<span class="check">수입품은 나라 이름을 써야 해요. “미국산”처럼 나라를 말하거나 고치기로 적어 주세요.</span>';
         if (d.dropped) li += '<span class="check">수량을 새로 말해서 전에 있던 두 번째 값 줄은 뺐어요. 되돌리려면 되돌리기를 눌러 주세요.</span>';
-        if (d.kind === 'new' && d.known === false) li += '<span class="check">“' + esc(it.item) + '”은 처음 듣는 품목이에요. 이름이 틀렸으면 고치기를 눌러 주세요. 고친 이름은 기억해 두고 다음부터 알아들어요.</span>';
+        if (d.kind === 'new' && d.known === false) li += '<span class="check">“' + esc(it.item) + '”' + josa(it.item, '은', '는') + ' 처음 듣는 품목이에요. 이름이 틀렸으면 고치기를 눌러 주세요. 고친 이름은 기억해 두고 다음부터 알아들어요.</span>';
         return li + '</li>';
-      }).join('') + low.map((s) => '<li><span class="check">“' + esc(s.text) + '”을 ' + TYPE_KO[s.type] + ' 봤는데 확실하지 않아요. 가격표를 확인해 주세요.</span></li>').join('');
+      }).join('') + low.map((s) => '<li><span class="check">“' + esc(s.text) + '”' + josa(s.text, '을', '를') + ' ' + TYPE_KO[s.type] + ' 봤는데 확실하지 않아요. 가격표를 확인해 주세요.</span></li>').join('');
     }
     $('#heardBy').textContent = picked ? '음성 인식 후보 중 ' + (picked + 1) + '번째 문장이 가격표로 가장 말이 돼서 그걸로 만들었어요.' : '';
   }
@@ -222,7 +232,7 @@
   function setMic(on, msg) {
     listening = on;
     $('#mic').classList.toggle('on', on);
-    $('#micLabel').textContent = on ? '듣는 중, 다시 누르면 멈춤' : '눌러서 말하기';
+    $('#micLabel').textContent = on ? '듣는 중, 다시 누르면 멈춤' : '한 번 누르고 말하기';
     if (msg) $('#micState').textContent = msg;
   }
   function initSpeech() {
@@ -302,7 +312,7 @@
       const wasNew = (it.check || []).includes('처음 듣는 품목');
       it.check = []; save(); render();
       const learned = wasNew && learn('items', it.item);
-      say('<li><span class="what">' + esc(it.item) + '</span> 가격표를 확인했어요.' + (learned ? '<span class="check" style="color:var(--green)">“' + esc(it.item) + '”을 기억했어요. 다음부터 품목으로 알아들어요.</span>' : '') + '</li>');
+      say('<li><span class="what">' + esc(it.item) + '</span> 가격표를 확인했어요.' + (learned ? '<span class="check" style="color:var(--green)">“' + esc(it.item) + '”' + josa(it.item, '을', '를') + ' 기억했어요. 다음부터 품목으로 알아들어요.</span>' : '') + '</li>');
       return;
     }
     if (b.dataset.act === 'del') {
@@ -335,15 +345,16 @@
         const os = String(d.get('origin')).trim();
         let learnedMsg = '';
         if (!os) it.origin = null;
+        else if (os === (it.origin || '') || /^국내산\(.+\)$/.test(os)) it.origin = os;
         else {
           const o = P.findOrigins(os);
           it.origin = o.length ? o[0].label : os;
           const place = os.replace(/산$/, '').replace(/\s+/g, '');
           if (!o.length && /^[가-힣]{2,8}$/.test(place) && learn('origins', place)) learnedMsg += ' 원산지 “' + esc(place) + '”도 기억했어요.';
         }
-        if (norm(oldName) !== norm(it.item) && learn('items', it.item)) learnedMsg = '“' + esc(it.item) + '”을 기억했어요. 다음부터 이 이름을 품목으로 알아들어요.' + learnedMsg;
+        if (norm(oldName) !== norm(it.item) && learn('items', it.item)) learnedMsg = '“' + esc(it.item) + '”' + josa(it.item, '을', '를') + ' 기억했어요. 다음부터 이 이름을 품목으로 알아들어요.' + learnedMsg;
         it.updatedAt = Date.now();
-        it.check = [];
+        it.check = it.origin && IMPORT_ONLY.test(it.origin) ? ['원산지 나라 이름'] : [];
         save(); render([it.id]);
         say('<li><span class="what">' + esc(it.item) + '</span> 가격표를 고쳤어요. ' + P.won(it.price) + '원' + (it.origin ? ', 원산지 ' + esc(it.origin) : '') + '.' + (learnedMsg ? '<span class="check" style="color:var(--green)">' + learnedMsg + '</span>' : '') + '</li>');
         $('#undo').hidden = false;

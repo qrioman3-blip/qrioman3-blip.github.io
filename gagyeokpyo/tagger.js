@@ -208,7 +208,8 @@
   }
   function itemOf(s) {
     const x = s.replace(/[,.!?]/g, ' ').replace(/\s+/g, ' ').trim();
-    return x.length > 2 ? x.replace(/(은|는|을|를)$/u, '') : x;
+    const y = x.length > 2 ? x.replace(/(은|는|을|를)$/u, '') : x;
+    return y.length > 2 ? y.replace(/\s*(값|가격)$/u, '') : y;
   }
 
   const STOP_ITEM = /^(값|가격|가격표|이거|요거|저거|오늘|이제|하나|자|여기|원산지)$/;
@@ -223,7 +224,11 @@
       const next = spans[idx + 1];
       if (s.type === 'ITEM') {
         const name = itemOf(s.text);
-        if (STOP_ITEM.test(name)) { lastEnd = s.end; return; }
+        if (STOP_ITEM.test(name)) {
+          // "사과 하나에 천 원"의 '하나'는 수량 1개
+          if (/^하나/.test(name) && cur && cur.item && cur.qty == null && cur.price == null) { cur.qty = 1; cur.unit = '개'; }
+          lastEnd = s.end; return;
+        }
         // 값을 먼저 말한 경우("오천 원짜리 사과")만 앞 줄에 이름을 붙임
         if (!cur || cur.item || cur.del || (cur.price != null && cur.first !== 'PRICE')) newRec();
         cur.item = name;
@@ -299,6 +304,17 @@
   function snap(t, spans, lex) {
     const dict = { ITEM: lex[0][1], ORIG: new Set([...lex[1][1], ...lex[2][1]]) };
     const TAIL = /^(하고|하|랑|이랑|와|과|은|는|이|가|도|을|를|로|으로|에)$/;
+    // 값 구간이 앞 낱말 끝 글자에서 시작하면("송|이 만 원", "대|구 만 원") 그 글자를 앞 구간에 돌려줌
+    spans.forEach((s, i) => {
+      if (s.type !== 'PRICE' || s.start === 0 || !/[가-힣]/.test(t[s.start - 1])) return;
+      const mm = s.text.match(/^([영공일이삼사오육륙칠팔구십백천만억]+)\s+\S/);
+      if (!mm) return;
+      const k = mm[1].length;
+      const prev = spans[i - 1];
+      if (prev && prev.end === s.start) { prev.end += k; prev.text = t.slice(prev.start, prev.end); }
+      s.start += k; while (t[s.start] === ' ') s.start++;
+      s.text = t.slice(s.start, s.end);
+    });
     for (const s of spans) {
       const D = dict[s.type]; if (!D) continue;
       const w = s.text.replace(/산$/, '');
@@ -324,8 +340,18 @@
     return spans;
   }
 
+  // "오천 원 아니 육천 원"처럼 말하다 고친 값은 뒤의 값만 씀
+  function selfCorrect(t) {
+    const ps = P.findPrices(t);
+    for (let i = ps.length - 2; i >= 0; i--) {
+      const gap = t.slice(ps[i].end, ps[i + 1].start);
+      if (/^\s*(아니|아니다|아니야|아니요|아니고|아니지|말고)\s*$/.test(gap)) t = t.slice(0, ps[i].start) + t.slice(ps[i + 1].start);
+    }
+    return t;
+  }
+
   function tag(model, text, extraLex) {
-    const t = clean(text);
+    const t = selfCorrect(clean(text));
     const lex = makeLex(model.base, extraLex);
     const x = prep(t, lex);
     const E = emissions(x, model.W);
@@ -341,7 +367,8 @@
     let by = 'model';
     if (!ops.length) {
       const rr = P.parse(r.t);
-      if (rr.ops.length) { ops = rr.ops; by = 'rule'; }
+      const ok = rr.ops.filter((o) => o.item && !STOP_ITEM.test(o.item));
+      if (ok.length) { ops = ok; by = 'rule'; }
     }
     return { ops, spans: r.spans, heard: r.t, by };
   }

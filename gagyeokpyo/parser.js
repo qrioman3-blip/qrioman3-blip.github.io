@@ -1,5 +1,5 @@
 /* 말하면 가격표: 말(음성 인식 결과)을 가격표 줄로 바꾸는 규칙.
-   품목 · 수량 · 단위 · 가격 · 원산지. 원산지는 말한 것만 쓰고 절대 추측하지 않는다. */
+   품목, 수량, 단위, 가격, 원산지를 찾는다. 원산지는 말한 것만 쓰고 절대 추측하지 않는다. */
 (function (root) {
   'use strict';
 
@@ -58,6 +58,8 @@
   }
 
   const NUMCH = '0-9.영공일이삼사오육륙칠팔구십백천만억';
+  // 숫자 글자로 끝나는 단위(송이, 다라이): 붙여 말해도 끝 글자를 값으로 읽지 않게
+  const UNIT_NUM_END = UNITS.map((u) => u[0]).filter((u) => u.length > 1 && /[영공일이삼사오육륙칠팔구십백천만억]$/.test(u));
   const PRICE_RE = new RegExp('([' + NUMCH + '](?:[' + NUMCH + ' ]*[' + NUMCH + '])?)\\s*원', 'g');
 
   function findPrices(t) {
@@ -78,8 +80,16 @@
           if (!isNaN(vv)) { v = vv; raw = toks.slice(k).join(' '); break; }
         }
       }
+      // 앞 낱말 끝 글자가 숫자처럼 읽힌 경우 떼기("한 송이 만 원"의 '이', "대구 만 원"의 '구', "인삼 만 원"의 '삼')
+      let start0 = m.index + m[0].indexOf(raw);
+      if (start0 > 0 && /[가-힣]/.test(t[start0 - 1])) {
+        const toks = raw.split(/\s+/);
+        const gluedUnit = UNIT_NUM_END.some((u) => t.slice(start0 - u.length + 1, start0 + 1) === u);
+        if (toks.length >= 2) { raw = toks.slice(1).join(' '); v = koNum(raw); }
+        else if (gluedUnit && raw.length >= 2) { raw = raw.slice(1); v = koNum(raw); }
+      }
       if (isNaN(v) || v <= 0) continue;
-      const start = m.index + m[0].indexOf(raw);
+      const start = m.index + m[0].indexOf(raw, start0 - m.index);
       out.push({ value: Math.round(v), start, end: m.index + m[0].length });
     }
     return out;
