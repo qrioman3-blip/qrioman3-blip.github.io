@@ -6,7 +6,7 @@
   const LEXKEY = 'malhamyeon-gagyeokpyo.lex';
   const SHOPKEY = 'malhamyeon-gagyeokpyo.shop';
   const $ = (s) => document.querySelector(s);
-  const state = { items: [], undo: null, model: null, learned: { items: [], origins: [] } };
+  const state = { items: [], undos: [], model: null, learned: { items: [], origins: [] } };
   const LOW = 0.8; // 이보다 확신이 낮으면 '확인해 주세요'
 
   // ---------- 저장 ----------
@@ -27,10 +27,13 @@
     return true;
   }
   const norm = (s) => String(s || '').replace(/\s+/g, '');
+  // 되돌리기는 여러 번(최근 20번까지)
+  function pushUndo(before) { if (before === JSON.stringify(state.items)) return; state.undos.push(before); if (state.undos.length > 20) state.undos.shift(); }
+  function showUndo() { $('#undo').hidden = !state.undos.length; }
   const uid = () => Math.random().toString(36).slice(2, 9);
 
   // 해석 모델(휴대폰 안에서 돎). 못 불러오면 규칙만으로.
-  fetch('model.json?v=6').then((r) => r.json()).then((j) => { state.model = TG.load(j); if (j.itemsAll) state.model.base.items = j.itemsAll; }).catch(() => { state.model = null; });
+  fetch('model.json?v=7').then((r) => r.json()).then((j) => { state.model = TG.load(j); if (j.itemsAll) state.model.base.items = j.itemsAll; }).catch(() => { state.model = null; });
   function userLex() { return { items: state.items.map((x) => x.item).concat(state.learned.items), origins: state.learned.origins }; }
   function knownItem(name) {
     const n = norm(name);
@@ -139,7 +142,7 @@
         if (k >= 0) {
           const it = state.items[k];
           it.origin = op.origin; it.updatedAt = now;
-          it.check = (it.check || []).filter((c) => c !== '원산지' && c !== '원산지 나라 이름');
+          it.check = (it.check || []).filter((c) => c !== '원산지' && c !== '원산지 나라 이름' && !/^못 알아들은 말/.test(c));
           if (IMPORT_ONLY.test(op.origin)) it.check.push('원산지 나라 이름');
           done.push({ kind: 'orig', it });
         } else if (op.item) done.push({ kind: 'nf', name: op.item });
@@ -159,7 +162,7 @@
           if (op.extra) it.extra = op.extra; else if (op.unit) it.extra = [];
           it.check = check;
           it.updatedAt = now;
-          done.push({ kind: 'upd', it, known: true, dropped: hadExtra && !(it.extra || []).length });
+          done.push({ kind: 'upd', it, known: true, dropped: hadExtra && !(it.extra || []).length, kept: hadExtra && !op.extra && !op.unit });
         } else {
           const it = { id: uid(), item: op.item, qty: op.qty, unit: op.unit, per: op.per, price: op.price, origin: op.origin, extra: op.extra || [], updatedAt: now, printedAt: 0, check };
           if (!known) it.check = check.concat(['처음 듣는 품목']);
@@ -168,7 +171,7 @@
         }
       }
     }
-    if (done.length) state.undo = before;
+    pushUndo(before);
     save();
     showHeard(r, done, picked);
     const ids = done.filter((d) => d.it && d.kind !== 'del').map((d) => d.it.id);
@@ -181,6 +184,9 @@
       // PC: 왼쪽 패널 안에서 "방금 들은 말"이 보이게(노트북 화면에서 인쇄 막대에 가리지 않게)
       const h = $('#heard');
       if (h && !h.hidden) setTimeout(() => h.scrollIntoView({ block: 'nearest' }), 30);
+      // 새 가격표가 화면 아래에 생겼으면 보이게(왼쪽 패널은 붙어 있어서 그대로 보임)
+      const el = ids.length && document.querySelector('.slot[data-id="' + ids[ids.length - 1] + '"]');
+      if (el) setTimeout(() => { const b = el.getBoundingClientRect(); if (b.bottom > innerHeight - 90 || b.top < 0) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 80);
     }
   }
 
@@ -197,6 +203,8 @@
     }
     if (op.origin && IMPORT_ONLY.test(op.origin)) out.push('원산지 나라 이름');
     if (op.unk && op.unk.length) out.push('못 알아들은 말 “' + op.unk.join(', ') + '”');
+    if (op.refixed) out.push('원산지');
+    if (op.price != null && (op.price < 100 || op.price > 1000000)) out.push('가격');
     return [...new Set(out)];
   }
   const itemClean = (x) => String(x).replace(/(은|는|을|를)$/u, '');
@@ -225,15 +233,20 @@
     $('#heardText').innerHTML = '“' + heardHTML(r.heard, r.spans, r.unknown) + '”';
     const ul = $('#heardOps');
     // 확인 안내는 가격표에 실제로 들어간 말만("아", "음" 같은 군말은 빼고)
-    const low = r.by === 'rule' ? [] : (r.spans || []).filter((s) => s.conf != null && s.conf < LOW && (s.type !== 'ITEM' || done.some((d) => d.it && norm(d.it.item) === norm(itemClean(s.text)))));
+    const low = r.by === 'rule' ? [] : (r.spans || []).filter((s) => s.conf != null && s.conf < LOW && !(s.type === 'DEL' && done.some((d) => d.kind === 'del')) && (s.type !== 'ITEM' || done.some((d) => d.it && norm(d.it.item) === norm(itemClean(s.text)))));
     if (!done.length) {
       const gotPrice = (r.spans || []).some((s) => s.type === 'PRICE');
-      ul.innerHTML = gotPrice
+      const gotDel = (r.spans || []).some((s) => s.type === 'DEL') || /(팔렸|품절|지워|빼\s*줘|삭제)/.test(r.heard || '');
+      ul.innerHTML = gotDel
+        ? (/^(전부|모두|다)\s/.test(r.heard || '') || /(전부|모두)/.test(r.heard || '')
+          ? '<li><span class="miss">가격표를 한꺼번에 지우려면 오른쪽 위 “전부 지우기”를 눌러 주세요. 하나만 지우려면 “고등어 다 팔렸어”처럼 품목 이름과 같이 말해 주세요.</span></li>'
+          : '<li><span class="miss">무엇을 지울지 못 알아들었어요. “고등어 다 팔렸어”처럼 품목 이름과 같이 말해 주세요.</span></li>')
+        : gotPrice
         ? '<li><span class="miss">값은 들었는데 품목 이름을 못 알아들었어요. “사과 한 봉지 오천 원”처럼 품목부터 말해 주세요.</span></li>'
         : '<li><span class="miss">가격을 못 알아들었어요. “사과 한 봉지 오천 원”처럼 원까지 말해 주세요.</span></li>';
-      $('#undo').hidden = true;
+      showUndo();
     } else {
-      $('#undo').hidden = !done.some((d) => d.it);
+      showUndo();
       ul.innerHTML = done.map((d) => {
         if (d.kind === 'del') return '<li><span class="what">' + esc(d.it.item) + '</span> 가격표를 지웠어요.</li>';
         if (d.kind === 'nf') return '<li><span class="miss">“' + esc(d.name) + '” 가격표가 없어요.</span></li>';
@@ -249,10 +262,14 @@
         let li = '<li><span class="what">' + esc(it.item) + '</span> 가격표를 ' + (d.kind === 'upd' ? '고쳤어요' : '만들었어요') + '. ' + (q ? esc(q) + ' ' : '') + P.won(it.price) + '원' + ex +
           (it.origin ? ', 원산지 ' + esc(it.origin) + '.' : '. <span class="miss">원산지를 말하지 않아서 빈칸으로 뒀어요.</span>');
         if (it.origin && IMPORT_ONLY.test(it.origin)) li += '<span class="check">수입품은 나라 이름을 써야 해요. “미국산”처럼 나라를 말하거나 고치기로 적어 주세요.</span>';
+        if (d.kept) li += '<span class="check">전에 있던 두 번째 값 줄(' + (it.extra || []).map((x) => esc(qtyText(x.qty, x.unit || it.unit, x.per)) + ' ' + P.won(x.price) + '원').join(', ') + ')은 그대로 뒀어요. 바뀌었으면 같이 말하거나 고치기로 고쳐 주세요.</span>';
         if (d.dropped) li += '<span class="check">수량을 새로 말해서 전에 있던 두 번째 값 줄은 뺐어요. 되돌리려면 되돌리기를 눌러 주세요.</span>';
         if (d.kind === 'new' && d.known === false) li += '<span class="check">“' + esc(it.item) + '”' + josa(it.item, '은', '는') + ' 처음 듣는 품목이에요. 이름이 틀렸으면 고치기를 눌러 주세요. 고친 이름은 기억해 두고 다음부터 알아들어요.</span>';
         return li + '</li>';
       }).join('') + low.map((s) => '<li><span class="check">“' + esc(s.text) + '”' + josa(s.text, '을', '를') + ' ' + TYPE_KO[s.type] + ' 봤는데 확실하지 않아요. 가격표를 확인해 주세요.</span></li>').join('') +
+        (r.fixes || []).map((f) => f.type === 'ORIG'
+          ? '<li><span class="check">원산지를 “' + esc(f.from) + '”에서 “' + esc(f.to) + '”' + josa(f.to, '으로', '로') + ' 고쳐 말한 걸로 봤어요. 맞는지 꼭 확인해 주세요.</span></li>'
+          : '<li><span class="check" style="color:var(--muted)">값을 “' + esc(f.from) + '”에서 “' + esc(f.to) + '”' + josa(f.to, '으로', '로') + ' 고쳐 말한 걸로 봤어요.</span></li>').join('') +
         (r.by === 'rule' && done.some((d) => d.kind === 'new' || d.kind === 'upd') ? '<li><span class="check">말을 확실하게 나누지 못해서 기본 규칙으로 만들었어요. 품목 이름이 맞는지 확인해 주세요.</span></li>' : '') +
         (r.unknown || []).map((u) => '<li><span class="check">“' + esc(u.text) + '”' + josa(u.text, '은', '는') + ' 못 알아들어서 가격표에 안 넣었어요. 원산지나 품목 이름이면 고치기로 적어 주세요.</span></li>').join('');
     }
@@ -279,6 +296,9 @@
     $('#mic').classList.toggle('on', on);
     $('#micLabel').textContent = on ? '다 말했으면 누르기' : '한 번 누르고 말하기';
     if (msg) $('#micState').textContent = msg;
+    // 휴대폰 아래쪽 말하기 버튼도 같은 상태로
+    const fab = $('#micFab');
+    if (fab) { fab.classList.toggle('on', on); $('#micFabLabel').textContent = on ? '다 말했으면 누르기' : '말하기'; $('#micFabSay').textContent = on ? $('#micState').textContent : ''; $('#micFabSay').hidden = !on; }
   }
   function quiet(ms) { clearTimeout(quietT); quietT = setTimeout(() => { if (wantOn) finish(); }, ms); }
   function finish() { wantOn = false; clearTimeout(quietT); clearTimeout(maxT); try { rec.stop(); } catch (e) { /* 이미 멈춤 */ } }
@@ -312,6 +332,7 @@
       runFinals = fin; runInterim = interim.trim();
       const now = joinSaid(said.concat(fin, [runInterim]));
       $('#micState').textContent = now ? '“' + now + '”' : '듣고 있어요.';
+      if ($('#micFabSay')) $('#micFabSay').textContent = $('#micState').textContent;
       quiet(QUIET_MS);
     };
     rec.onerror = (e) => {
@@ -338,7 +359,7 @@
       apply(t, 'voice', alts);
     };
   }
-  $('#mic').addEventListener('click', () => {
+  function toggleMic() {
     if (!rec) return;
     if (listening || wantOn) { finish(); return; }
     said = []; runFinals = []; runInterim = ''; altBase = null;
@@ -347,7 +368,13 @@
     setMic(true, '듣고 있어요. 다 말하면 버튼을 한 번 더 누르세요.');
     quiet(FIRST_MS);
     clearTimeout(maxT); maxT = setTimeout(() => { if (wantOn) finish(); }, MAX_MS);
-  });
+  }
+  $('#mic').addEventListener('click', toggleMic);
+  if ($('#micFab')) {
+    $('#micFab').addEventListener('click', toggleMic);
+    // 위쪽 말하기 버튼이 화면 밖으로 나가면 아래쪽 버튼을 보여 줌(휴대폰)
+    if ('IntersectionObserver' in window) new IntersectionObserver((es) => { $('#micFab').classList.toggle('show', !es[0].isIntersecting && !!rec); }).observe($('#mic'));
+  }
 
   // ---------- 적기·예시 ----------
   $('#typeForm').addEventListener('submit', (e) => {
@@ -359,9 +386,9 @@
   });
   document.querySelectorAll('.ex').forEach((b) => b.addEventListener('click', () => { b.blur(); apply(b.dataset.say, 'example'); }));
   $('#undo').addEventListener('click', () => {
-    if (!state.undo) return;
-    state.items = JSON.parse(state.undo); state.undo = null; save(); render();
-    $('#heardOps').innerHTML = '<li>방금 한 것을 되돌렸어요.</li>'; $('#undo').hidden = true; $('#heardBy').textContent = '';
+    if (!state.undos.length) return;
+    state.items = JSON.parse(state.undos.pop()); save(); render();
+    $('#heardOps').innerHTML = '<li>한 단계 되돌렸어요.' + (state.undos.length ? ' 더 누르면 그 전으로 돌아가요.' : '') + '</li>'; showUndo(); $('#heardBy').textContent = '';
   });
   function say(html) {
     $('#heard').hidden = false; $('#heardText').innerHTML = ''; $('#heardBy').textContent = '';
@@ -382,9 +409,9 @@
       return;
     }
     if (b.dataset.act === 'del') {
-      state.undo = JSON.stringify(state.items);
-      state.items = state.items.filter((x) => x.id !== id); save(); render();
-      say('<li><span class="what">' + esc(it.item) + '</span> 가격표를 지웠어요.</li>'); $('#undo').hidden = false;
+      const before = JSON.stringify(state.items);
+      state.items = state.items.filter((x) => x.id !== id); pushUndo(before); save(); render();
+      say('<li><span class="what">' + esc(it.item) + '</span> 가격표를 지웠어요.</li>'); showUndo();
     } else if (b.dataset.act === 'edit') {
       if (slot.querySelector('.edit')) return;
       const f = document.createElement('form');
@@ -400,7 +427,7 @@
       f.addEventListener('submit', (ev) => {
         ev.preventDefault();
         const d = new FormData(f);
-        state.undo = JSON.stringify(state.items);
+        const before = JSON.stringify(state.items);
         const oldName = it.item;
         it.item = String(d.get('item')).trim() || it.item;
         const pv = P.koNum(String(d.get('price')).replace(/[,원\s]/g, ''));
@@ -421,18 +448,18 @@
         if (norm(oldName) !== norm(it.item) && learn('items', it.item)) learnedMsg = '“' + esc(it.item) + '”' + josa(it.item, '을', '를') + ' 기억했어요. 다음부터 이 이름을 품목으로 알아들어요.' + learnedMsg;
         it.updatedAt = Date.now();
         it.check = it.origin && IMPORT_ONLY.test(it.origin) ? ['원산지 나라 이름'] : [];
-        save(); render([it.id]);
+        pushUndo(before); save(); render([it.id]);
         say('<li><span class="what">' + esc(it.item) + '</span> 가격표를 고쳤어요. ' + P.won(it.price) + '원' + (it.origin ? ', 원산지 ' + esc(it.origin) : '') + '.' + (learnedMsg ? '<span class="check" style="color:var(--green)">' + learnedMsg + '</span>' : '') + '</li>');
-        $('#undo').hidden = false;
+        showUndo();
       });
     }
   });
   $('#clearAll').addEventListener('click', (e) => {
     const b = e.currentTarget;
     if (b.dataset.armed) {
-      state.undo = JSON.stringify(state.items); state.items = []; save(); render();
+      const before = JSON.stringify(state.items); state.items = []; pushUndo(before); save(); render();
       b.textContent = '전부 지우기'; delete b.dataset.armed;
-      say('<li>가격표를 전부 지웠어요.</li>'); $('#undo').hidden = false;
+      say('<li>가격표를 전부 지웠어요.</li>'); showUndo();
     } else {
       if (!state.items.length) return;
       b.textContent = '한 번 더 누르면 전부 지워요'; b.dataset.armed = '1';
@@ -500,7 +527,7 @@
       g.textAlign = 'left';
       const q = qtyText(it.qty, it.unit, it.per);
       const ex = (it.extra || []).map((x) => qtyText(x.qty, x.unit || it.unit, x.per) + ' ' + P.won(x.price) + '원');
-      const line = [q ? q + ' 기준' : '', ...ex].filter(Boolean).join(', ');
+      const line = [q ? q + (/당$/.test(q) ? '' : ' 기준') : '', ...ex].filter(Boolean).join(', ');
       g.font = '600 32px "IBM Plex Sans KR"'; g.fillStyle = '#3A322A';
       if (line) g.fillText(line, 72, y + 116);
       if (it.origin) { g.textAlign = 'right'; g.fillStyle = '#2F6B3A'; g.fillText('원산지 ' + it.origin, W - 72, y + 116); g.textAlign = 'left'; }

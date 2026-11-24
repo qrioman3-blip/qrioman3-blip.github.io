@@ -222,3 +222,16 @@ body:not(.has-tags){padding-bottom:0}
   .sheet .tag{outline:.2mm dashed #8C8276;outline-offset:-.1mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}
   .bw .sheet .tag{outline:none}
 }
+
+/* 휴대폰: 위쪽 말하기 버튼이 안 보이면 아래쪽에 띄움 */
+.mic-fab{display:none}
+@media (max-width:860px){
+  .mic-fab{position:fixed;right:14px;bottom:calc(74px + env(safe-area-inset-bottom));z-index:6;width:78px;height:78px;border-radius:50%;border:0;background:var(--red);color:#FFF8EE;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-weight:700;font-size:11.5px;line-height:1.2;text-align:center;padding:0 8px;box-shadow:0 8px 20px -8px rgba(34,29,23,.6);opacity:0;pointer-events:none;transform:translateY(8px);transition:opacity .2s,transform .2s}
+  .mic-fab svg{width:26px;height:26px;flex:none}
+  .mic-fab.show,.mic-fab.on{display:flex;opacity:1;pointer-events:auto;transform:none}
+  .mic-fab.show{display:flex}
+  .mic-fab.on{background:#A31F13;box-shadow:0 0 0 8px rgba(201,42,28,.18)}
+  body:not(.has-tags) .mic-fab{bottom:calc(18px + env(safe-area-inset-bottom))}
+  .fab-say{position:absolute;right:0;bottom:calc(100% + 10px);width:min(78vw,300px);background:var(--ink);color:#FFF8EE;border-radius:10px;padding:10px 12px;font-size:14px;font-weight:600;text-align:left;line-height:1.45}
+}
+@media print{.mic-fab{display:none!important}}

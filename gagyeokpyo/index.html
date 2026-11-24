@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>말하면 가격표</title>
-<meta name="description" content="전통시장 사장님이 말하면 원산지까지 들어간 가격표가 나오는 웹앱. 설치·로그인 없이 휴대폰 크롬에서 바로.">
+<meta name="description" content="전통시장 사장님이 말하면 원산지까지 들어간 가격표가 나오는 웹앱. 설치나 로그인 없이 휴대폰 크롬에서 바로.">
 <meta name="robots" content="noindex">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=6">
+<link rel="stylesheet" href="style.css?v=7">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 </head>
 <body>
@@ -112,13 +112,19 @@
 
 <footer class="foot">
   <p>말소리는 크롬 음성 인식(구글 서버)을 거쳐 글자가 되고, 그 글자를 품목, 수량, 가격, 원산지로 나누는 일은 이 앱에 들어 있는 시장 말 해석 모델이 기기 안에서 해요. 가격표 내용은 이 기기에만 저장돼요.</p>
-  <p>최성지 기획·검수, Claude와 협업해 만들었어요. 2026</p>
+  <p>최성지가 기획하고 검수했고, Claude와 협업해 만들었어요. 2026</p>
 </footer>
+
+<button id="micFab" class="mic-fab" type="button" aria-label="말하기">
+  <span id="micFabSay" class="fab-say" hidden></span>
+  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+  <span id="micFabLabel">말하기</span>
+</button>
 
 <div id="printArea" class="print-area" aria-hidden="true"></div>
 
-<script src="parser.js?v=6"></script>
-<script src="tagger.js?v=6"></script>
-<script src="app.js?v=6"></script>
+<script src="parser.js?v=7"></script>
+<script src="tagger.js?v=7"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>

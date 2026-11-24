@@ -361,24 +361,38 @@
   }
 
   // "오천 원 아니 육천 원"처럼 말하다 고친 값은 뒤의 값만 씀
+  // 고쳐 말하기: "오천 원 아니 육천 원", "오천 원에서 육천 원으로", "국산 아니 중국산" → 앞의 말을 버림
+  const NO = '(아니|아니다|아니야|아니요|아니고|아니지|아니라|말고)';
   function selfCorrect(t) {
+    const fixes = [];
     const ps = P.findPrices(t);
     for (let i = ps.length - 2; i >= 0; i--) {
       const gap = t.slice(ps[i].end, ps[i + 1].start);
       const toNew = /^\s*에서\s*$/.test(gap) && /^\s*(으로|로)/.test(t.slice(ps[i + 1].end));
-      if (toNew || /^\s*(아니|아니다|아니야|아니요|아니고|아니지|말고)\s*$/.test(gap)) t = t.slice(0, ps[i].start) + t.slice(ps[i + 1].start);
+      if (toNew || new RegExp('^\\s*,?\\s*' + NO + '\\s*,?\\s*$').test(gap)) {
+        fixes.push({ type: 'PRICE', from: t.slice(ps[i].start, ps[i].end).trim(), to: t.slice(ps[i + 1].start, ps[i + 1].end).trim() });
+        t = t.slice(0, ps[i].start) + t.slice(ps[i + 1].start);
+      }
     }
-    return t;
+    const os = P.findOrigins(t);
+    for (let i = os.length - 2; i >= 0; i--) {
+      const gap = t.slice(os[i].end, os[i + 1].start);
+      if (new RegExp('^\\s*(이|가|은|는|이요|요|이고|이야|이에요|이여|여)?\\s*,?\\s*' + NO + '\\s*,?\\s*$').test(gap)) {
+        fixes.push({ type: 'ORIG', from: os[i].word, to: os[i + 1].word });
+        t = t.slice(0, os[i].start) + t.slice(os[i + 1].start);
+      }
+    }
+    return { t, fixes };
   }
 
   function tag(model, text, extraLex) {
-    const t = selfCorrect(clean(text));
+    const sc = selfCorrect(clean(text)), t = sc.t;
     const lex = makeLex(model.base, extraLex);
     const x = prep(t, lex);
     const E = emissions(x, model.W);
     const y = viterbi(E, model.T);
     const M = marginals(E, model.T, model.temp);
-    return { t, labels: y, spans: snap(t, toSpans(t, y, M), lex) };
+    return { t, labels: y, spans: snap(t, toSpans(t, y, M), lex), fixes: sc.fixes };
   }
 
   // 말 → {ops, spans, heard}. 모델이 가격표 줄을 못 만들면 규칙으로 한 번 더.
@@ -451,7 +465,9 @@
       if (!best) best = ops.find((o) => o.at) || null;
       if (best) { if (!best.unk) Object.defineProperty(best, 'unk', { value: [], enumerable: false }); best.unk.push(u.text); }
     });
-    return { ops, spans: r.spans, heard: r.t, by, unknown };
+    // 원산지를 고쳐 말했으면 그 줄은 꼭 확인을 부탁함
+    if (r.fixes.some((f) => f.type === 'ORIG')) ops.forEach((o) => { if (o.origin) Object.defineProperty(o, 'refixed', { value: true, enumerable: false }); });
+    return { ops, spans: r.spans, heard: r.t, by, unknown, fixes: r.fixes };
   }
 
   const api = { LABELS, NL, prep, feats, emissions, viterbi, marginals, toSpans, assemble, makeLex, load, tag, understand, clean, lexMarks, leftovers };
