@@ -56,10 +56,10 @@
     const cls = size === '4' ? 'tag s4' : size === '1' ? 'tag s1' : 'tag';
     const price = P.won(it.price);
     // 글자가 넘치면 줄이되, 원산지는 20포인트(7.1mm) 아래로 안 내려감
-    const G = size === '1' ? { w: 255, item: 40, qty: 18, main: 64, ov: 20, ol: 9 } : size === '4' ? { w: 84, item: 20, qty: 10, main: 26, ov: 10, ol: 4.2 } : { w: 88, item: 16, qty: 8, main: 21, ov: 8, ol: 4.2 };
+    const G = size === '1' ? { w: 255, item: 40, qty: 18, main: 64, ov: 20, ol: 9 } : size === '4' ? { w: 84, item: 22, qty: 10, main: 34, ov: 10, ol: 4.2 } : { w: 88, item: 16, qty: 8, main: 21, ov: 8, ol: 4.2 };
     const mainFs = Math.min(G.main, G.w / (em(price) + 0.55));
     const qt = qtyText(it.qty, it.unit, it.per);
-    const itemRoom = size === '4' ? G.w : G.w - em(qt) * G.qty - 4;
+    const itemRoom = G.w - em(qt) * G.qty - 4;
     const itemFs = Math.min(G.item, itemRoom / Math.max(1, em(it.item)));
     const extras = (it.extra || []).map((x) => '<span class="t-extra">' + esc(qtyText(x.qty, x.unit || it.unit, x.per)) + ' ' + P.won(x.price) + '원</span>').join('');
     const ovFs = it.origin ? Math.max(7.1, Math.min(G.ov, (G.w - G.ol * 3.2 - 3) / Math.max(1, em(it.origin)))) : G.ov;
@@ -82,8 +82,8 @@
 
   function notes(it) {
     const f = [];
-    if (it.printedAt && it.updatedAt > it.printedAt) f.push('<span class="note chg">인쇄 뒤 값 바뀜</span>');
-    if (!it.origin) f.push('<span class="note miss">원산지 빠짐</span>');
+    if (it.check && it.check.length) f.push('<span class="note miss">확인해 주세요: ' + esc(it.check.join(', ')) + '</span>');
+    else if (it.printedAt && it.updatedAt > it.printedAt) f.push('<span class="note chg">인쇄 뒤 값 바뀜</span>');
     return f.join('');
   }
 
@@ -91,15 +91,17 @@
     const box = $('#tags');
     box.innerHTML = state.items.map((it) =>
       '<div class="slot" data-id="' + it.id + '">' +
-        '<div class="fit' + (flashIds && flashIds.includes(it.id) ? ' flash' : '') + '">' + tagHTML(it, '8') + '</div>' +
+        '<div class="fit' + (flashIds && flashIds.includes(it.id) ? ' flash' : '') + (it.check && it.check.length ? ' chk' : '') + '">' + tagHTML(it, '8') + '</div>' +
         '<div class="slot-tools">' + notes(it) + '<span style="flex:1"></span>' +
-          '<button type="button" class="link" data-act="edit">고치기</button>' +
-          '<button type="button" class="link link-danger" data-act="del">지우기</button></div>' +
+          (it.check && it.check.length ? '<button type="button" class="tbtn ok" data-act="ok">맞아요</button>' : '') +
+          '<button type="button" class="tbtn" data-act="edit">고치기</button>' +
+          '<button type="button" class="tbtn del" data-act="del">지우기</button></div>' +
       '</div>').join('');
     const has = state.items.length > 0;
     $('#empty').hidden = has;
-    $('#shopRow').hidden = !has;
     document.body.classList.toggle('has-tags', has);
+    $('#shareImg').disabled = !has; $('#clearAll').disabled = !has;
+    $('#shopName').hidden = !has;
     if (!has) $('#demoFit').innerHTML = tagHTML({ item: '사과', qty: 1, unit: '봉지', per: false, price: 5000, origin: '국내산(청송)', extra: [{ qty: 2, unit: '봉지', per: false, price: 9000 }] }, '8');
     $('#count').textContent = has ? state.items.length + '장' : '';
     fitAll();
@@ -129,16 +131,20 @@
       } else if (op.op === 'set') {
         if (!op.item) continue;
         const known = knownItem(op.item);
+        const check = checksFor(op, r.spans);
         if (i >= 0) {
           const it = state.items[i];
+          const hadExtra = (it.extra || []).length;
           it.price = op.price;
           if (op.unit) { it.qty = op.qty; it.unit = op.unit; it.per = op.per; }
           if (op.origin) it.origin = op.origin;
           if (op.extra) it.extra = op.extra; else if (op.unit) it.extra = [];
+          it.check = check;
           it.updatedAt = now;
-          done.push({ kind: 'upd', it, known: true });
+          done.push({ kind: 'upd', it, known: true, dropped: hadExtra && !(it.extra || []).length });
         } else {
-          const it = { id: uid(), item: op.item, qty: op.qty, unit: op.unit, per: op.per, price: op.price, origin: op.origin, extra: op.extra || [], updatedAt: now, printedAt: 0 };
+          const it = { id: uid(), item: op.item, qty: op.qty, unit: op.unit, per: op.per, price: op.price, origin: op.origin, extra: op.extra || [], updatedAt: now, printedAt: 0, check };
+          if (!known) it.check = check.concat(['처음 듣는 품목']);
           state.items.push(it);
           done.push({ kind: 'new', it, known });
         }
@@ -156,22 +162,37 @@
     }
   }
 
+  // 확신이 낮은 구간이 이 줄의 어느 칸인지
+  function checksFor(op, spans) {
+    const out = [];
+    for (const s of (spans || [])) {
+      if (s.conf == null || s.conf >= LOW) continue;
+      const w = norm(s.text).replace(/산$/, '');
+      if (s.type === 'ORIG' && op.origin && norm(op.origin).includes(w)) out.push('원산지');
+      else if (s.type === 'ITEM' && norm(op.item) === norm(itemClean(s.text))) out.push('품목 이름');
+      else if (s.type === 'QTY' && op.unit) out.push('수량');
+      else if (s.type === 'PRICE') out.push('가격');
+    }
+    return [...new Set(out)];
+  }
+  const itemClean = (x) => String(x).replace(/(은|는|을|를)$/u, '');
+
   function heardHTML(t, spans) {
     if (!spans || !spans.length) return esc(t);
     let h = '', at = 0;
     for (const s of spans) {
       h += esc(t.slice(at, s.start));
-      h += '<span class="sp sp-' + s.type + (s.conf != null && s.conf < LOW ? ' low' : '') + '">' + esc(t.slice(s.start, s.end)) + '</span>';
+      h += '<span class="sp sp-' + s.type + (s.conf != null && s.conf < LOW ? ' low' : '') + '" title="' + TYPE_NAME[s.type] + '">' + esc(t.slice(s.start, s.end)) + '</span>';
       at = s.end;
     }
     return h + esc(t.slice(at));
   }
 
+  const TYPE_NAME = { ITEM: '품목', QTY: '수량', PRICE: '가격', ORIG: '원산지', DEL: '지우기' };
   const TYPE_KO = { ITEM: '품목으로', QTY: '수량으로', PRICE: '가격으로', ORIG: '원산지로', DEL: '지우라는 말로' };
   function showHeard(r, done, picked) {
     $('#heard').hidden = false;
     $('#heardText').innerHTML = '“' + heardHTML(r.heard, r.spans) + '”';
-    $('#heardKey').hidden = !(r.spans && r.spans.length);
     const ul = $('#heardOps');
     const low = (r.spans || []).filter((s) => s.conf != null && s.conf < LOW);
     if (!done.length) {
@@ -185,15 +206,14 @@
         const it = d.it;
         const q = qtyText(it.qty, it.unit, it.per);
         const ex = (it.extra || []).map((x) => ', ' + esc(qtyText(x.qty, x.unit || it.unit, x.per)) + ' ' + P.won(x.price) + '원').join('');
-        let li = '<li>' + (d.kind === 'upd' ? '고침 ' : '') + '<span class="what">' + esc(it.item) + '</span>' + (q ? ' ' + esc(q) : '') + ' ' + P.won(it.price) + '원' + ex +
-          (it.origin ? ', 원산지 ' + esc(it.origin) : ', <span class="miss">원산지를 말해 주세요</span>');
+        let li = '<li><span class="what">' + esc(it.item) + '</span> 가격표를 ' + (d.kind === 'upd' ? '고쳤어요' : '만들었어요') + '. ' + (q ? esc(q) + ' ' : '') + P.won(it.price) + '원' + ex +
+          (it.origin ? ', 원산지 ' + esc(it.origin) + '.' : '. <span class="miss">원산지를 말하지 않아서 빈칸으로 뒀어요.</span>');
+        if (d.dropped) li += '<span class="check">수량을 새로 말해서 전에 있던 두 번째 값 줄은 뺐어요. 되돌리려면 되돌리기를 눌러 주세요.</span>';
         if (d.kind === 'new' && d.known === false) li += '<span class="check">“' + esc(it.item) + '”은 처음 듣는 품목이에요. 이름이 틀렸으면 고치기를 눌러 주세요. 고친 이름은 기억해 두고 다음부터 알아들어요.</span>';
         return li + '</li>';
       }).join('') + low.map((s) => '<li><span class="check">“' + esc(s.text) + '”을 ' + TYPE_KO[s.type] + ' 봤는데 확실하지 않아요. 가격표를 확인해 주세요.</span></li>').join('');
     }
-    $('#heardBy').textContent = r.by === 'model'
-      ? '휴대폰 안의 시장 말 해석 모델이 나눴어요' + (picked ? ' (음성 인식 후보 중 ' + (picked + 1) + '번째가 가격표로 가장 말이 돼서 골랐어요)' : '') + '.'
-      : r.by === 'rule' ? '규칙으로 나눴어요.' : '';
+    $('#heardBy').textContent = picked ? '음성 인식 후보 중 ' + (picked + 1) + '번째 문장이 가격표로 가장 말이 돼서 그걸로 만들었어요.' : '';
   }
 
   // ---------- 음성 인식 ----------
@@ -268,7 +288,7 @@
     $('#heardOps').innerHTML = '<li>방금 한 것을 되돌렸어요.</li>'; $('#undo').hidden = true; $('#heardBy').textContent = '';
   });
   function say(html) {
-    $('#heard').hidden = false; $('#heardText').innerHTML = ''; $('#heardKey').hidden = true; $('#heardBy').textContent = '';
+    $('#heard').hidden = false; $('#heardText').innerHTML = ''; $('#heardBy').textContent = '';
     $('#heardOps').innerHTML = html;
   }
 
@@ -278,6 +298,13 @@
     const slot = b.closest('.slot'); if (!slot) return;
     const id = slot.dataset.id;
     const it = state.items.find((x) => x.id === id); if (!it) return;
+    if (b.dataset.act === 'ok') {
+      const wasNew = (it.check || []).includes('처음 듣는 품목');
+      it.check = []; save(); render();
+      const learned = wasNew && learn('items', it.item);
+      say('<li><span class="what">' + esc(it.item) + '</span> 가격표를 확인했어요.' + (learned ? '<span class="check" style="color:var(--green)">“' + esc(it.item) + '”을 기억했어요. 다음부터 품목으로 알아들어요.</span>' : '') + '</li>');
+      return;
+    }
     if (b.dataset.act === 'del') {
       state.undo = JSON.stringify(state.items);
       state.items = state.items.filter((x) => x.id !== id); save(); render();
@@ -290,7 +317,7 @@
         '<label>가격(원)<input name="price" inputmode="numeric" value="' + it.price + '"></label>' +
         '<label>수량, 단위<input name="qty" value="' + esc(qtyText(it.qty, it.unit, it.per)) + '" placeholder="예) 한 봉지"></label>' +
         '<label>원산지<input name="origin" value="' + esc(it.origin || '') + '" placeholder="예) 국내산, 해남, 중국산"></label>' +
-        '<div class="row"><span class="hint">고친 품목 이름과 원산지는 기억해요</span><button type="button" class="link" data-act="cancel">취소</button><button class="btn btn-ink" type="submit">저장</button></div>';
+        '<div class="row"><span class="hint">고친 품목 이름과 원산지는 기억해요</span><button type="button" class="tbtn" data-act="cancel">취소</button><button class="btn btn-ink" type="submit">저장</button></div>';
       slot.appendChild(f);
       f.querySelector('input').focus();
       f.addEventListener('click', (ev) => { if (ev.target.dataset.act === 'cancel') f.remove(); });
@@ -316,8 +343,9 @@
         }
         if (norm(oldName) !== norm(it.item) && learn('items', it.item)) learnedMsg = '“' + esc(it.item) + '”을 기억했어요. 다음부터 이 이름을 품목으로 알아들어요.' + learnedMsg;
         it.updatedAt = Date.now();
+        it.check = [];
         save(); render([it.id]);
-        say('<li>고침 <span class="what">' + esc(it.item) + '</span> ' + P.won(it.price) + '원' + (learnedMsg ? '<span class="check" style="color:var(--green)">' + learnedMsg + '</span>' : '') + '</li>');
+        say('<li><span class="what">' + esc(it.item) + '</span> 가격표를 고쳤어요. ' + P.won(it.price) + '원' + (it.origin ? ', 원산지 ' + esc(it.origin) : '') + '.' + (learnedMsg ? '<span class="check" style="color:var(--green)">' + learnedMsg + '</span>' : '') + '</li>');
         $('#undo').hidden = false;
       });
     }
@@ -407,9 +435,11 @@
     return c;
   }
   $('#shareImg').addEventListener('click', async () => {
-    if (!state.items.length) { say('<li>먼저 가격표를 만들어 주세요.</li>'); return; }
+    if (!state.items.length) return;
     if (document.fonts && document.fonts.ready) await document.fonts.ready;
     const c = boardImage();
+    const noOrig = state.items.filter((x) => !x.origin).length;
+    say('<li>시세판 그림을 만들었어요.' + (noOrig ? ' <span class="miss">원산지를 말하지 않은 ' + noOrig + '개는 원산지 없이 나가요.</span>' : '') + '</li>');
     c.toBlob(async (blob) => {
       const name = '오늘시세_' + new Date().toISOString().slice(0, 10) + '.png';
       const file = new File([blob], name, { type: 'image/png' });
