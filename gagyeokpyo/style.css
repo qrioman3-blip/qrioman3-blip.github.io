@@ -149,7 +149,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .edit input{width:100%;box-sizing:border-box;border:1.5px solid var(--line);border-radius:6px;padding:8px;font-size:16px;color:var(--ink);background:#fff}
 .edit input:focus{outline:none;border-color:var(--ink)}
 .edit .row{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end;align-items:center}
-.edit .hint{margin-right:auto;font-size:13px;color:var(--muted)}
+.edit .hint{flex:1 1 100%;font-size:13px;color:var(--muted)}
 
 .law{max-width:1180px;margin:8px auto 0;padding:18px 20px 6px;border-top:1px solid var(--line)}
 .law h2{font-size:16px;margin:0 0 6px}

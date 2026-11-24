@@ -159,6 +159,10 @@
     if (ids.length && window.matchMedia('(max-width:860px)').matches) {
       const el = document.querySelector('.slot[data-id="' + ids[0] + '"]');
       if (el) setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'center' }), 60);
+    } else {
+      // PC: 왼쪽 패널 안에서 "방금 들은 말"이 보이게(노트북 화면에서 인쇄 막대에 가리지 않게)
+      const h = $('#heard');
+      if (h && !h.hidden) setTimeout(() => h.scrollIntoView({ block: 'nearest' }), 30);
     }
   }
 

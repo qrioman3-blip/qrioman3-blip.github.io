@@ -307,10 +307,13 @@
     // 값 구간이 앞 낱말 끝 글자에서 시작하면("송|이 만 원", "대|구 만 원") 그 글자를 앞 구간에 돌려줌
     spans.forEach((s, i) => {
       if (s.type !== 'PRICE' || s.start === 0 || !/[가-힣]/.test(t[s.start - 1])) return;
-      const mm = s.text.match(/^([영공일이삼사오육륙칠팔구십백천만억]+)\s+\S/);
-      if (!mm) return;
-      const k = mm[1].length;
       const prev = spans[i - 1];
+      let k = 0;
+      const mm = s.text.match(/^([영공일이삼사오육륙칠팔구십백천만억]+)\s+\S/);
+      if (mm) k = mm[1].length;
+      // 붙여 말한 "대구만원": 앞 품목 구간에 첫 글자를 붙이면 사전 품목이 되고, 남은 글자도 값이면 떼기
+      else if (prev && prev.type === 'ITEM' && prev.end === s.start && dict.ITEM.has(prev.text + s.text[0]) && !isNaN(P.koNum(s.text.slice(1).replace(/[원\s]/g, '')))) k = 1;
+      if (!k) return;
       if (prev && prev.end === s.start) { prev.end += k; prev.text = t.slice(prev.start, prev.end); }
       s.start += k; while (t[s.start] === ' ') s.start++;
       s.text = t.slice(s.start, s.end);
