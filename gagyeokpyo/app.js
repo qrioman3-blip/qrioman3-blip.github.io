@@ -30,7 +30,7 @@
   const uid = () => Math.random().toString(36).slice(2, 9);
 
   // 해석 모델(휴대폰 안에서 돎). 못 불러오면 규칙만으로.
-  fetch('model.json').then((r) => r.json()).then((j) => { state.model = TG.load(j); if (j.itemsAll) state.model.base.items = j.itemsAll; }).catch(() => { state.model = null; });
+  fetch('model.json?v=6').then((r) => r.json()).then((j) => { state.model = TG.load(j); if (j.itemsAll) state.model.base.items = j.itemsAll; }).catch(() => { state.model = null; });
   function userLex() { return { items: state.items.map((x) => x.item).concat(state.learned.items), origins: state.learned.origins }; }
   function knownItem(name) {
     const n = norm(name);
