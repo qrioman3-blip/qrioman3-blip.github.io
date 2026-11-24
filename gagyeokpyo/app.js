@@ -108,6 +108,13 @@
   }
 
   // ---------- 말 → 가격표 ----------
+  // 이번 말에서 방금 만든 가격표, 없으면 가장 최근에 만들거나 고친 가격표
+  function lastTouched(done) {
+    for (let d = done.length - 1; d >= 0; d--) if (done[d].it && done[d].kind !== 'del') { const k = state.items.indexOf(done[d].it); if (k >= 0) return k; }
+    let k = -1;
+    state.items.forEach((x, j) => { if (k < 0 || (x.updatedAt || 0) >= (state.items[k].updatedAt || 0)) k = j; });
+    return k;
+  }
   function apply(text, source, alts) {
     let r = understand(text);
     // 음성 인식 후보가 여럿이면 가격표가 가장 말이 되게 나오는 것을 고름
@@ -126,12 +133,23 @@
         if (i >= 0) { done.push({ kind: 'del', it: state.items[i] }); state.items.splice(i, 1); }
         else done.push({ kind: 'nf', name: op.item });
       } else if (op.op === 'origin') {
-        if (i >= 0) { state.items[i].origin = op.origin; state.items[i].updatedAt = now; done.push({ kind: 'upd', it: state.items[i] }); }
-        else done.push({ kind: 'nf', name: op.item });
+        // 품목 없이 원산지만 말했으면(또는 못 알아들은 말이 품목 자리에 끼었으면) 방금 만들거나 고친 가격표에 붙임
+        let k = i;
+        if (k < 0 && (!op.item || !knownItem(op.item))) k = lastTouched(done);
+        if (k >= 0) {
+          const it = state.items[k];
+          it.origin = op.origin; it.updatedAt = now;
+          it.check = (it.check || []).filter((c) => c !== '원산지' && c !== '원산지 나라 이름');
+          if (IMPORT_ONLY.test(op.origin)) it.check.push('원산지 나라 이름');
+          done.push({ kind: 'orig', it });
+        } else if (op.item) done.push({ kind: 'nf', name: op.item });
+        else done.push({ kind: 'noTag', origin: op.origin });
       } else if (op.op === 'set') {
         if (!op.item) continue;
         const known = knownItem(op.item);
         const check = checksFor(op, r.spans);
+        // AI가 줄을 못 만들어 기본 규칙으로 만든 가격표는 품목부터 확인을 부탁
+        if (r.by === 'rule' && !check.includes('품목 이름')) check.push('품목 이름');
         if (i >= 0) {
           const it = state.items[i];
           const hadExtra = (it.extra || []).length;
@@ -178,15 +196,17 @@
       else if (s.type === 'PRICE') out.push('가격');
     }
     if (op.origin && IMPORT_ONLY.test(op.origin)) out.push('원산지 나라 이름');
+    if (op.unk && op.unk.length) out.push('못 알아들은 말 “' + op.unk.join(', ') + '”');
     return [...new Set(out)];
   }
   const itemClean = (x) => String(x).replace(/(은|는|을|를)$/u, '');
   // 받침 있으면 a(은/을), 없으면 b(는/를)
-  const josa = (w, a, b) => { const c = String(w).trim().slice(-1).charCodeAt(0); return c >= 0xAC00 && c <= 0xD7A3 && (c - 0xAC00) % 28 ? a : b; };
+  const josa = (w, a, b) => { const c = String(w).replace(/[^가-힣A-Za-z0-9]+$/, '').slice(-1).charCodeAt(0); return c >= 0xAC00 && c <= 0xD7A3 && (c - 0xAC00) % 28 ? a : b; };
   const IMPORT_ONLY = /^(수입산|수입|외국산)$/;
 
-  function heardHTML(t, spans) {
-    if (!spans || !spans.length) return esc(t);
+  function heardHTML(t, spans, unknown) {
+    spans = (spans || []).concat((unknown || []).map((u) => ({ type: 'UNK', start: u.start, end: u.end }))).sort((a, b) => a.start - b.start);
+    if (!spans.length) return esc(t);
     let h = '', at = 0;
     for (const s of spans) {
       if (s.end <= at) continue;
@@ -198,13 +218,14 @@
     return h + esc(t.slice(at));
   }
 
-  const TYPE_NAME = { ITEM: '품목', QTY: '수량', PRICE: '가격', ORIG: '원산지', DEL: '지우기' };
+  const TYPE_NAME = { ITEM: '품목', QTY: '수량', PRICE: '가격', ORIG: '원산지', DEL: '지우기', UNK: '못 알아들은 말' };
   const TYPE_KO = { ITEM: '품목으로', QTY: '수량으로', PRICE: '가격으로', ORIG: '원산지로', DEL: '지우라는 말로' };
   function showHeard(r, done, picked) {
     $('#heard').hidden = false;
-    $('#heardText').innerHTML = '“' + heardHTML(r.heard, r.spans) + '”';
+    $('#heardText').innerHTML = '“' + heardHTML(r.heard, r.spans, r.unknown) + '”';
     const ul = $('#heardOps');
-    const low = (r.spans || []).filter((s) => s.conf != null && s.conf < LOW);
+    // 확인 안내는 가격표에 실제로 들어간 말만("아", "음" 같은 군말은 빼고)
+    const low = r.by === 'rule' ? [] : (r.spans || []).filter((s) => s.conf != null && s.conf < LOW && (s.type !== 'ITEM' || done.some((d) => d.it && norm(d.it.item) === norm(itemClean(s.text)))));
     if (!done.length) {
       const gotPrice = (r.spans || []).some((s) => s.type === 'PRICE');
       ul.innerHTML = gotPrice
@@ -212,10 +233,16 @@
         : '<li><span class="miss">가격을 못 알아들었어요. “사과 한 봉지 오천 원”처럼 원까지 말해 주세요.</span></li>';
       $('#undo').hidden = true;
     } else {
-      $('#undo').hidden = false;
+      $('#undo').hidden = !done.some((d) => d.it);
       ul.innerHTML = done.map((d) => {
         if (d.kind === 'del') return '<li><span class="what">' + esc(d.it.item) + '</span> 가격표를 지웠어요.</li>';
         if (d.kind === 'nf') return '<li><span class="miss">“' + esc(d.name) + '” 가격표가 없어요.</span></li>';
+        if (d.kind === 'noTag') return '<li><span class="miss">원산지 ' + esc(d.origin) + josa(d.origin, '은', '는') + ' 들었는데 붙일 가격표가 없어요. 품목과 값부터 말해 주세요.</span></li>';
+        if (d.kind === 'orig') {
+          let li = '<li><span class="what">' + esc(d.it.item) + '</span> 가격표에 원산지 ' + esc(d.it.origin) + josa(d.it.origin, '을', '를') + ' 넣었어요. 다른 품목이면 되돌리기를 눌러 주세요.';
+          if (IMPORT_ONLY.test(d.it.origin)) li += '<span class="check">수입품은 나라 이름을 써야 해요. “미국산”처럼 나라를 말하거나 고치기로 적어 주세요.</span>';
+          return li + '</li>';
+        }
         const it = d.it;
         const q = qtyText(it.qty, it.unit, it.per);
         const ex = (it.extra || []).map((x) => ', ' + esc(qtyText(x.qty, x.unit || it.unit, x.per)) + ' ' + P.won(x.price) + '원').join('');
@@ -225,19 +252,40 @@
         if (d.dropped) li += '<span class="check">수량을 새로 말해서 전에 있던 두 번째 값 줄은 뺐어요. 되돌리려면 되돌리기를 눌러 주세요.</span>';
         if (d.kind === 'new' && d.known === false) li += '<span class="check">“' + esc(it.item) + '”' + josa(it.item, '은', '는') + ' 처음 듣는 품목이에요. 이름이 틀렸으면 고치기를 눌러 주세요. 고친 이름은 기억해 두고 다음부터 알아들어요.</span>';
         return li + '</li>';
-      }).join('') + low.map((s) => '<li><span class="check">“' + esc(s.text) + '”' + josa(s.text, '을', '를') + ' ' + TYPE_KO[s.type] + ' 봤는데 확실하지 않아요. 가격표를 확인해 주세요.</span></li>').join('');
+      }).join('') + low.map((s) => '<li><span class="check">“' + esc(s.text) + '”' + josa(s.text, '을', '를') + ' ' + TYPE_KO[s.type] + ' 봤는데 확실하지 않아요. 가격표를 확인해 주세요.</span></li>').join('') +
+        (r.by === 'rule' && done.some((d) => d.kind === 'new' || d.kind === 'upd') ? '<li><span class="check">말을 확실하게 나누지 못해서 기본 규칙으로 만들었어요. 품목 이름이 맞는지 확인해 주세요.</span></li>' : '') +
+        (r.unknown || []).map((u) => '<li><span class="check">“' + esc(u.text) + '”' + josa(u.text, '은', '는') + ' 못 알아들어서 가격표에 안 넣었어요. 원산지나 품목 이름이면 고치기로 적어 주세요.</span></li>').join('');
     }
     $('#heardBy').textContent = picked ? '음성 인식 후보 중 ' + (picked + 1) + '번째 문장이 가격표로 가장 말이 돼서 그걸로 만들었어요.' : '';
   }
 
   // ---------- 음성 인식 ----------
+  // 사장님이 중간에 숨을 돌려도 끊지 않아요. 버튼을 다시 누르거나 3초 조용하면 그때 한 번에 가격표로 만들어요.
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let rec = null, listening = false;
+  const QUIET_MS = 3000, FIRST_MS = 8000, MAX_MS = 40000;
+  let rec = null, listening = false, wantOn = false;
+  let said = [], runFinals = [], runInterim = '', altBase = null, quietT = 0, maxT = 0;
+  const joinSaid = (arr) => arr.join(' ').replace(/\s+/g, ' ').trim();
+  // 안드로이드 크롬은 앞 문장을 포함한 문장을 또 보내기도 해서, 겹치면 긴 쪽만 남김
+  function pushFinal(list, tx) {
+    const t = String(tx || '').trim(); if (!t) return;
+    const prev = list[list.length - 1];
+    if (prev != null && norm(t).startsWith(norm(prev))) list[list.length - 1] = t;
+    else if (prev != null && norm(prev).endsWith(norm(t))) return;
+    else list.push(t);
+  }
   function setMic(on, msg) {
     listening = on;
     $('#mic').classList.toggle('on', on);
-    $('#micLabel').textContent = on ? '듣는 중, 다시 누르면 멈춤' : '한 번 누르고 말하기';
+    $('#micLabel').textContent = on ? '다 말했으면 누르기' : '한 번 누르고 말하기';
     if (msg) $('#micState').textContent = msg;
+  }
+  function quiet(ms) { clearTimeout(quietT); quietT = setTimeout(() => { if (wantOn) finish(); }, ms); }
+  function finish() { wantOn = false; clearTimeout(quietT); clearTimeout(maxT); try { rec.stop(); } catch (e) { /* 이미 멈춤 */ } }
+  function commitRun() {
+    runFinals.forEach((f) => pushFinal(said, f));
+    if (runInterim) pushFinal(said, runInterim); // 멈출 때 아직 확정 안 된 끝말도 버리지 않음
+    runFinals = []; runInterim = '';
   }
   function initSpeech() {
     if (!SR) {
@@ -249,42 +297,56 @@
     rec = new SR();
     rec.lang = 'ko-KR';
     rec.interimResults = true;
-    rec.continuous = false;
+    rec.continuous = true;
     rec.maxAlternatives = 3;
-    let finals = [], lastAlts = [];
-    rec.onstart = () => { finals = []; lastAlts = []; setMic(true, '듣고 있어요. 천천히 말해 주세요.'); };
+    rec.onstart = () => { if (!listening) setMic(true, '듣고 있어요. 다 말하면 버튼을 한 번 더 누르세요.'); };
     rec.onresult = (e) => {
-      let interim = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) {
+      const fin = []; let interim = '';
+      for (let i = 0; i < e.results.length; i++) {
         const res = e.results[i];
         if (res.isFinal) {
-          finals.push(res[0].transcript);
-          lastAlts = Array.from({ length: res.length }, (_, k) => res[k].transcript);
-        } else interim += res[0].transcript;
+          pushFinal(fin, res[0].transcript);
+          if (res.length > 1) altBase = { head: joinSaid(said.concat(fin.slice(0, -1))), alts: Array.from({ length: res.length }, (_, k) => res[k].transcript.trim()) };
+        } else interim += res[0].transcript + ' ';
       }
-      $('#micState').textContent = (finals.join(' ') + ' ' + interim).trim() || '듣고 있어요.';
+      runFinals = fin; runInterim = interim.trim();
+      const now = joinSaid(said.concat(fin, [runInterim]));
+      $('#micState').textContent = now ? '“' + now + '”' : '듣고 있어요.';
+      quiet(QUIET_MS);
     };
     rec.onerror = (e) => {
+      if (e.error === 'aborted') return;
+      if (e.error === 'no-speech') { if (!joinSaid(said.concat(runFinals, [runInterim]))) { wantOn = false; setMic(false, '말소리가 안 들렸어요. 다시 눌러 말해 주세요.'); } return; }
+      wantOn = false;
       const m = e.error === 'not-allowed' || e.error === 'service-not-allowed' ? '마이크 사용이 막혀 있어요. 주소창 옆 자물쇠에서 마이크를 허용해 주세요.'
-        : e.error === 'no-speech' ? '말소리가 안 들렸어요. 다시 눌러 말해 주세요.'
         : e.error === 'network' ? '음성 인식 서버에 연결이 안 돼요. 인터넷을 확인하거나 아래에 적어 주세요.'
         : '음성 인식이 멈췄어요(' + e.error + '). 다시 눌러 주세요.';
       setMic(false, m);
     };
     rec.onend = () => {
-      const t = finals.join(' ').trim();
-      setMic(false, t ? '알아들었어요. 가격표를 확인해 주세요.' : $('#micState').textContent);
+      commitRun();
+      // 아직 다 말하지 않았는데 브라우저가 먼저 끊으면 바로 다시 들음
+      if (wantOn) { try { rec.start(); return; } catch (e) { wantOn = false; } }
+      clearTimeout(quietT); clearTimeout(maxT);
+      const t = joinSaid(said);
+      const msg = $('#micState').textContent;
+      setMic(false, t ? '알아들었어요. 가격표를 확인해 주세요.' : (listening && /^“|듣고 있어요/.test(msg) ? '말소리가 안 들렸어요. 다시 눌러 말해 주세요.' : msg));
       if (!t) return;
-      // 마지막 문장의 다른 후보들로 바꿔 본 문장들
-      const head = finals.slice(0, -1).join(' ');
-      const alts = lastAlts.length > 1 ? lastAlts.map((a) => (head + ' ' + a).trim()) : null;
+      // 마지막 문장의 다른 후보들로 바꿔 본 문장들(앞부분이 그대로일 때만)
+      let alts = null;
+      if (altBase && joinSaid([altBase.head, altBase.alts[0]]) === t) alts = altBase.alts.map((a) => joinSaid([altBase.head, a]));
       apply(t, 'voice', alts);
     };
   }
   $('#mic').addEventListener('click', () => {
     if (!rec) return;
-    if (listening) { rec.stop(); return; }
+    if (listening || wantOn) { finish(); return; }
+    said = []; runFinals = []; runInterim = ''; altBase = null;
+    wantOn = true;
     try { rec.start(); } catch (e) { /* 이미 시작됨 */ }
+    setMic(true, '듣고 있어요. 다 말하면 버튼을 한 번 더 누르세요.');
+    quiet(FIRST_MS);
+    clearTimeout(maxT); maxT = setTimeout(() => { if (wantOn) finish(); }, MAX_MS);
   });
 
   // ---------- 적기·예시 ----------

@@ -62,11 +62,13 @@ h1{font-family:var(--sign);font-weight:400;font-size:30px;line-height:1.1;margin
 .heard-h{font-size:15px;margin:0}
 .heard-text{margin:6px 0 4px;font-size:18px;font-weight:600;line-height:1.9}
 .heard-text .sp{padding:1px 3px;border-radius:3px;border-bottom:3px solid}
-.sp-ITEM{border-color:var(--c-item);background:rgba(34,29,23,.06)}
-.sp-QTY{border-color:var(--c-qty);background:rgba(47,93,138,.08)}
-.sp-PRICE{border-color:var(--c-price);background:rgba(201,42,28,.08)}
-.sp-ORIG{border-color:var(--c-orig);background:rgba(47,107,58,.1)}
-.sp-DEL{border-color:var(--c-del);background:rgba(122,62,156,.08)}
+/* 밑줄 색이 .sp의 기본 색에 덮이지 않게 같은 깊이로 */
+.heard-text .sp-ITEM{border-bottom-color:var(--c-item);background:rgba(34,29,23,.06)}
+.heard-text .sp-QTY{border-bottom-color:var(--c-qty);background:rgba(47,93,138,.08)}
+.heard-text .sp-PRICE{border-bottom-color:var(--c-price);background:rgba(201,42,28,.08)}
+.heard-text .sp-ORIG{border-bottom-color:var(--c-orig);background:rgba(47,107,58,.1)}
+.heard-text .sp-DEL{border-bottom-color:var(--c-del);background:rgba(122,62,156,.08)}
+.heard-text .sp-UNK{border-bottom:2px dotted var(--warn);border-radius:0;background:none}
 .heard-text .low{outline:2px dashed var(--warn);outline-offset:1px}
 .heard-ops{list-style:none;margin:0;padding:0;display:grid;gap:6px}
 .heard-ops li{font-size:15px;text-wrap:pretty}

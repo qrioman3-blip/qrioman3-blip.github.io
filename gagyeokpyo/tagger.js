@@ -196,7 +196,11 @@
   }
   function qtyOf(s) {
     const q = P.findQty(s.replace(/\s+/g, ' ').trim() + ' ');
-    if (q.length) return { qty: q[0].qty, unit: q[0].unit, per: q[0].per };
+    if (q.length) return { qty: q[0].qty + (/\s반$/.test(s.trim()) && Number.isInteger(q[0].qty) ? 0.5 : 0), unit: q[0].unit, per: q[0].per };
+    // 사전에 없는 단위("한 재기", "두 톳"): 앞 수만 수로 읽고 나머지는 단위
+    const NW = { 한: 1, 두: 2, 세: 3, 네: 4, 다섯: 5, 여섯: 6, 일곱: 7, 여덟: 8, 아홉: 9, 열: 10 };
+    const k = s.trim().match(/^(한|두|세|네|다섯|여섯|일곱|여덟|아홉|열|\d+)\s*([가-힣a-zA-Z]+?)(당)?$/);
+    if (k && k[2]) return { qty: NW[k[1]] || +k[1], unit: k[2], per: !!k[3] };
     const m = s.replace(/\s+/g, '').match(/^(.*?)(당)?$/);
     return { qty: 1, unit: m[1] || s, per: !!m[2] };
   }
@@ -212,7 +216,7 @@
     return y.length > 2 ? y.replace(/\s*(값|가격)$/u, '') : y;
   }
 
-  const STOP_ITEM = /^(값|가격|가격표|이거|요거|저거|오늘|이제|하나|자|여기|원산지)$/;
+  const STOP_ITEM = /^(값|가격|가격표|이거|요거|저거|오늘|이제|하나|자|여기|원산지|아|어|음|으음|흠|그|저|저기|저기요|네|예|응|아니|전부|모두|다|둘|셋|둘다|반)$/;
   function assemble(t, spans) {
     const recs = [];
     let cur = null, pend = null, lastEnd = 0;
@@ -227,6 +231,8 @@
         if (STOP_ITEM.test(name)) {
           // "사과 하나에 천 원"의 '하나'는 수량 1개
           if (/^하나/.test(name) && cur && cur.item && cur.qty == null && cur.price == null) { cur.qty = 1; cur.unit = '개'; }
+          // "한 근 반" → 1.5근
+          if (name === '반' && cur && cur.unit && cur.price == null && Number.isInteger(cur.qty) && /^\s*$/.test(gap)) cur.qty += 0.5;
           lastEnd = s.end; return;
         }
         // 값을 먼저 말한 경우("오천 원짜리 사과")만 앞 줄에 이름을 붙임
@@ -251,6 +257,11 @@
         }
       } else if (s.type === 'ORIG') {
         const lab = originLabel(s.text);
+        // "둘 다 국산이에요", "전부 국내산": 이 말 안의 원산지 빈 가격표 모두에
+        if (recs.length > 1 && /(둘\s*다|셋\s*다|모두|전부|다)\s*$/.test(t.slice(Math.max(0, s.start - 8), s.start)) && !(next && next.type === 'ITEM')) {
+          recs.forEach((r) => { if (r.origin == null && (r.item || r.price != null)) r.origin = lab; });
+          lastEnd = s.end; return;
+        }
         const nextIsNew = next && (next.type === 'ITEM' || (next.type === 'QTY' && spans[idx + 2] && spans[idx + 2].type === 'ITEM'));
         const canPrev = cur && cur.origin == null && (cur.item || cur.price != null);
         if (canPrev && !(nextIsNew && sep)) cur.origin = lab;
@@ -275,6 +286,7 @@
       if (r.del && r.item) { ops.push({ op: 'del', item: r.item }); continue; }
       if (r.item && r.price != null) {
         const op = { op: 'set', item: r.item, qty: r.unit ? r.qty : null, unit: r.unit, per: !!r.per, price: r.price, origin: r.origin };
+        if (r.spans.length) Object.defineProperty(op, 'at', { value: [r.spans[0].start, r.spans[r.spans.length - 1].end], enumerable: false });
         if (r.extra.length) op.extra = r.extra;
         ops.push(op); prevSet = op; continue;
       }
@@ -285,6 +297,11 @@
         continue;
       }
       if (r.item && r.origin && r.price == null) { ops.push({ op: 'origin', item: r.item, origin: r.origin }); continue; }
+      // 원산지만 말한 경우("청송산", "국내산이요"): 이 말 안의 앞 가격표에, 없으면 화면에서 방금 만든 가격표에 붙임
+      if (!r.item && r.origin && r.price == null) {
+        if (prevSet && !prevSet.origin) prevSet.origin = r.origin;
+        else ops.push({ op: 'origin', item: null, origin: r.origin });
+      }
     }
     return ops;
   }
@@ -348,7 +365,8 @@
     const ps = P.findPrices(t);
     for (let i = ps.length - 2; i >= 0; i--) {
       const gap = t.slice(ps[i].end, ps[i + 1].start);
-      if (/^\s*(아니|아니다|아니야|아니요|아니고|아니지|말고)\s*$/.test(gap)) t = t.slice(0, ps[i].start) + t.slice(ps[i + 1].start);
+      const toNew = /^\s*에서\s*$/.test(gap) && /^\s*(으로|로)/.test(t.slice(ps[i + 1].end));
+      if (toNew || /^\s*(아니|아니다|아니야|아니요|아니고|아니지|말고)\s*$/.test(gap)) t = t.slice(0, ps[i].start) + t.slice(ps[i + 1].start);
     }
     return t;
   }
@@ -364,8 +382,60 @@
   }
 
   // 말 → {ops, spans, heard}. 모델이 가격표 줄을 못 만들면 규칙으로 한 번 더.
+  // 가격표에 안 들어간 낱말 중 뜻이 있어 보이는 것("진영", "구룡포") — 사장님께 확인을 부탁하려고
+  const FUNC = new Set(('자 오늘 오늘은 이제 이거 요거 저거 여기 거기 음 어 아 에 그 저 저기 저기요 으음 흠 네 예 응 뭐냐 거시기 그러니까 근데 그런데 ' +
+    '그리고 하고 또 다음 그다음 그라고 허고 이랑 랑 및 그리고또 아니 아니고 말고 아니요 아니야 아니지 ' +
+    '가격표 가격 값 원산지 원산지는 원산지가 원산지도 써 써줘 써주세요 적어 적어줘 적어주세요 해 해줘 해주세요 해요 만들어 만들어줘 만들어주세요 이렇게 ' +
+    '바꿔 바꿔줘 바꿔주세요 바꿀게 올려 올려줘 올려요 내려 내려줘 내려요 변경 할게 해서 받아 받어 받아요 받어요 받을게 팔아 팔아요 팔어 줘 주세요 ' +
+    '이요 요 이에요 에요 예요 입니다 입니더 이고 고 짜리 씩 에서 으로 로 거 거요 거여 것 거예요 이여 여 이라 라 이랑께 랑께 잉 이잉 요잉 유 이유 ' +
+    '다 전부 모두 둘 셋 둘다 셋다 같이 각각 하나 하나씩 개당 묶어서 떨이 오늘만 지금 새로 새로운 처음 방금 그거 그것 이것 저것 ' +
+    '산 원 짜리 정도 쯤 한 두 세 네 반').split(/\s+/));
+  function leftovers(t, spans) {
+    const used = new Uint8Array(t.length);
+    spans.forEach((s) => { for (let i = s.start; i < s.end; i++) used[i] = 1; });
+    const out = [];
+    const re = /[가-힣A-Za-z]+/g; let m;
+    while ((m = re.exec(t))) {
+      let a = m.index, b = a + m[0].length;
+      if ([...Array(b - a).keys()].some((k) => used[a + k])) continue; // 구간에 걸친 낱말은 조사 꼬리
+      let w = m[0].replace(/(은|는|이|가|을|를|도|만|에|에서|으로|로|요|이요|이에요|예요|입니다|이고|이랑|랑|하고)$/u, '');
+      if (w.length < 2 || FUNC.has(m[0]) || FUNC.has(w)) continue;
+      if (/^(거|것|꺼)(요|여|예|라|라예|랑께|이여|이라|이에요|예요|입니다|유|이유|임|이다|다)?$/.test(m[0])) continue; // "신안 거랑께", "의령 거라예"
+      if (/^(수정|고쳐|고치|변경|바꾸|바꿔|올리|내리|만들|적어|써|해|빼|지우|넣어|넣)/.test(m[0])) continue; // 시키는 말
+      if (/^(다|전부|모두)?(팔렸|팔렸어|팔렸다|팔렸네|팔렸어요|팔림|품절|나갔|나갔어|떨어졌|없어|없응께|삭제|지워|빼|끝났)/.test(m[0])) continue;
+      out.push({ text: m[0], start: a, end: b });
+    }
+    return out;
+  }
   function understand(model, text, extraLex) {
     const r = tag(model, text, extraLex);
+    // 원산지로 봤는데 '산'도 안 붙었고 아는 지명·나라도 아니면("받어", "우리") 확신을 낮춰 확인 표시
+    r.spans.forEach((s) => {
+      if (s.type !== 'ORIG') return;
+      const w = s.text.replace(/\s/g, '').replace(/(이에요|이요|예요|입니다|이고|요|거|것)$/, '');
+      if (!/산$/.test(w) && !/^(국내산|국산|우리농산물|수입|원양)$/.test(w) && !P.findOrigins(w + '산').length) s.conf = Math.min(s.conf == null ? 1 : s.conf, 0.5);
+    });
+    // "꽃게 떨어졌어"처럼 다 팔렸다는 말을 품목으로 잘못 보거나 놓치면 지우기 말로 바로잡음
+    const DEL_W = /^(다\s*)?(팔렸|떨어졌|나갔|품절|매진|끝났)/;
+    r.spans.forEach((s, i) => {
+      if (s.type !== 'ITEM' || !DEL_W.test(s.text)) return;
+      s.type = 'DEL'; s.conf = Math.max(s.conf || 0, 0.9);
+      const nx = r.spans[i + 1] ? r.spans[i + 1].start : r.t.length;
+      while (s.end < nx && /[가-힣]/.test(r.t[s.end])) s.end++;
+      s.text = r.t.slice(s.start, s.end);
+    });
+    const reD = /(다\s*)?(팔렸|떨어졌|나갔|품절|매진|끝났)[가-힣]*/g; let md;
+    while ((md = reD.exec(r.t))) {
+      const a = md.index, b = a + md[0].length;
+      if (!r.spans.some((s) => s.start < b && s.end > a)) r.spans.push({ type: 'DEL', start: a, end: b, text: md[0], conf: 0.9 });
+    }
+    r.spans.sort((x, y) => x.start - y.start);
+    // "강원|도"처럼 지명 끝 글자가 빠지면 붙여 줌
+    r.spans.forEach((s, i) => {
+      if (s.type !== 'ORIG' || r.t[s.end] !== '도' || (r.spans[i + 1] && r.spans[i + 1].start === s.end)) return;
+      const o = P.findOrigins(s.text.replace(/산$/, '') + '도산');
+      if (o.length && /도\)?$/.test(o[0].label.replace(/산$/, ''))) { s.end += 1; s.text = r.t.slice(s.start, s.end); }
+    });
     let ops = assemble(r.t, r.spans);
     let by = 'model';
     if (!ops.length) {
@@ -373,9 +443,17 @@
       const ok = rr.ops.filter((o) => o.item && !STOP_ITEM.test(o.item));
       if (ok.length) { ops = ok; by = 'rule'; }
     }
-    return { ops, spans: r.spans, heard: r.t, by };
+    const unknown = leftovers(r.t, r.spans);
+    // 못 알아들은 낱말은 가장 가까운 앞 가격표 줄에 붙임
+    unknown.forEach((u) => {
+      let best = null;
+      ops.forEach((o) => { if (o.at && o.at[0] <= u.start && (!best || o.at[0] > best.at[0])) best = o; });
+      if (!best) best = ops.find((o) => o.at) || null;
+      if (best) { if (!best.unk) Object.defineProperty(best, 'unk', { value: [], enumerable: false }); best.unk.push(u.text); }
+    });
+    return { ops, spans: r.spans, heard: r.t, by, unknown };
   }
 
-  const api = { LABELS, NL, prep, feats, emissions, viterbi, marginals, toSpans, assemble, makeLex, load, tag, understand, clean, lexMarks };
+  const api = { LABELS, NL, prep, feats, emissions, viterbi, marginals, toSpans, assemble, makeLex, load, tag, understand, clean, lexMarks, leftovers };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.PriceTagger = api;
 })(typeof window !== 'undefined' ? window : globalThis);
